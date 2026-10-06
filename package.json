@@ -1,0 +1,17 @@
+{
+  "name": "gombe-payout-backend",
+  "version": "1.0.0",
+  "description": "Paystack payout backend for Gombe Football Economy",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "firebase-admin": "^11.11.0"
+  }
+}
