@@ -8,11 +8,11 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
+const cors = require('cors');  // ═══ NEW ═══
 
 // ================================================================
 // FIREBASE INIT
 // ================================================================
-// Service account comes from environment variable (see README)
 let serviceAccount;
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -36,12 +36,10 @@ const db = admin.firestore();
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const PAYSTACK_API = 'https://api.paystack.co';
 
-// Safety limits
-const MIN_TRANSFER = 100;        // ₦100
-const MAX_TRANSFER = 500000;     // ₦500,000
-const DAILY_TRANSFER_CAP = 2000000; // ₦2M/day
+const MIN_TRANSFER = 100;
+const MAX_TRANSFER = 500000;
+const DAILY_TRANSFER_CAP = 2000000;
 
-// Admin API key for protecting endpoints (generate a random string)
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
 if (!PAYSTACK_SECRET) {
@@ -57,6 +55,17 @@ if (!ADMIN_API_KEY) {
 // APP SETUP
 // ================================================================
 const app = express();
+
+// ═══ NEW: CORS — allow requests from anywhere (dev + Vercel + Firebase) ═══
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'x-admin-key'],
+    credentials: false
+}));
+
+// ═══ NEW: Handle preflight OPTIONS requests ═══
+app.options('*', cors());
 
 // ================================================================
 // WEBHOOK ROUTE (raw body required for signature verification)
@@ -157,9 +166,6 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
     }
 
     try {
-        // --------------------------------------------------
-        // STEP 1: Read withdrawal request
-        // --------------------------------------------------
         const reqRef = db.collection('WithdrawalRequests').doc(requestId);
         const reqDoc = await reqRef.get();
 
@@ -169,18 +175,12 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
 
         const request = reqDoc.data();
 
-        // --------------------------------------------------
-        // STEP 2: Verify status is "processing"
-        // --------------------------------------------------
         if (request.status !== 'processing') {
             return res.status(400).json({
                 error: `Cannot pay. Status is "${request.status}". Must be "processing".`
             });
         }
 
-        // --------------------------------------------------
-        // STEP 3: Check amount limits
-        // --------------------------------------------------
         const amount = request.nairaAmount;
 
         if (amount < MIN_TRANSFER) {
@@ -190,9 +190,6 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
             return res.status(400).json({ error: `Amount ₦${amount} exceeds maximum ₦${MAX_TRANSFER}` });
         }
 
-        // --------------------------------------------------
-        // STEP 4: Check daily cap
-        // --------------------------------------------------
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
 
@@ -210,9 +207,6 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
             });
         }
 
-        // --------------------------------------------------
-        // STEP 5: Get or create Paystack recipient
-        // --------------------------------------------------
         let recipientCode;
         try {
             recipientCode = await getOrCreateRecipient(request);
@@ -225,9 +219,6 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
             return res.status(500).json({ error: `Recipient creation failed: ${err.message}` });
         }
 
-        // --------------------------------------------------
-        // STEP 6: Initiate transfer
-        // --------------------------------------------------
         const reference = `GOMBE_${requestId}_${Date.now()}`;
 
         let transferResponse;
@@ -236,7 +227,7 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
                 `${PAYSTACK_API}/transfer`,
                 {
                     source: 'balance',
-                    amount: Math.round(amount * 100), // kobo
+                    amount: Math.round(amount * 100),
                     recipient: recipientCode,
                     reason: 'Gombe Football Economy withdrawal',
                     reference: reference
@@ -282,9 +273,6 @@ app.post('/api/pay-withdrawal', requireAdmin, async (req, res) => {
 
         const transferData = transferResponse.data.data;
 
-        // --------------------------------------------------
-        // STEP 7: Log transfer
-        // --------------------------------------------------
         await db.collection('PaystackTransfers').add({
             requestId,
             userId: request.userId,
@@ -334,7 +322,6 @@ async function getOrCreateRecipient(request) {
         return cached.data().recipientCode;
     }
 
-    // Fetch banks
     const bankRes = await axios.get(`${PAYSTACK_API}/bank`, {
         headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
     });
@@ -360,7 +347,6 @@ async function getOrCreateRecipient(request) {
         throw new Error(`Bank not found: ${request.bank}`);
     }
 
-    // Create recipient
     const recipientRes = await axios.post(
         `${PAYSTACK_API}/transferrecipient`,
         {
@@ -456,7 +442,6 @@ async function handleTransferFailed(data) {
     if (requestDoc.exists) {
         const request = requestDoc.data();
 
-        // Refund tokens
         await db.collection('TapGamersList').doc(request.userId).update({
             tokens: admin.firestore.FieldValue.increment(request.tokens || 0)
         });
@@ -479,4 +464,5 @@ app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`💰 Paystack: ${PAYSTACK_SECRET.substring(0, 12)}...`);
+    console.log(`🌐 CORS: enabled for all origins`);
 });
